@@ -218,10 +218,17 @@
 
     function wallSecondsToHMS(s){
       s = ((s % 86400) + 86400) % 86400;
-      const h = Math.floor(s / 3600);
+        
+      let h24 = Math.floor(s / 3600);
       const m = Math.floor((s % 3600) / 60);
       const sec = s % 60;
-      return `${pad2(h)}:${pad2(m)}:${pad2(sec)}`;
+        
+      const ampm = h24 >= 12 ? "PM" : "AM";
+        
+      let h12 = h24 % 12;
+      if (h12 === 0) h12 = 12; // midnight & noon handling
+        
+      return `${h12}:${pad2(m)}:${pad2(sec)} ${ampm}`;
     }
 
     function parseHHMMSS(datetimeStr){
