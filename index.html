@@ -178,6 +178,10 @@
 <body>
   <main class="shell">
     <section class="card" role="region" aria-label="Policy reminder">
+      <div class="clock" aria-label="Current time">
+          <div id="clockTime" class="clock-time">--:--:--</div>
+          <div id="clockMeta" class="clock-meta">America/New_York</div>
+      </div>
       <header>
         <div class="title-wrap">
           <div class="badge"><span class="dot"></span> Daily Reminder</div>
@@ -189,12 +193,6 @@
       </header>
 
       <div class="content">
-        <!-- Added clock (above the image) -->
-        <div class="clock" aria-label="Current time">
-          <div id="clockTime" class="clock-time">--:--:--</div>
-          <div id="clockMeta" class="clock-meta">America/New_York</div>
-        </div>
-
         <div class="image-frame">
           <img src="./policy.png" alt="Policy image" />
         </div>
@@ -264,7 +262,7 @@
         // Fallback: local device clock (still shows TZ label so users know intent)
         baseServerMs = Date.now();
         basePerfMs = performance.now();
-        clockMetaEl.textContent = `${TZ} • local fallback`;
+        clockMetaEl.textContent = `${TZ}`;
         clockTimeEl.textContent = formatClock(baseServerMs);
         startTick();
       }
