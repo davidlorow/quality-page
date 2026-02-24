@@ -204,73 +204,66 @@
     </section>
   </main>
 
-  <script>
-    function dismiss() {
-      document.querySelector(".card").style.display = "none";
-    }
-
-    document.getElementById("year").textContent = new Date().getFullYear();
-
-    // --- Clock using free time API (WorldTimeAPI) ---
+    <script>
     const TZ = "America/New_York";
     const clockTimeEl = document.getElementById("clockTime");
     const clockMetaEl = document.getElementById("clockMeta");
-
-    let baseServerMs = null;      // server time (ms) at fetch moment
-    let basePerfMs = null;        // performance.now() at fetch moment
+    const yearEl = document.getElementById("year");
+    
+    let baseWallSeconds = 0; // seconds since NY midnight at sync moment
+    let basePerfMs = 0;      // performance.now() at sync moment
     let tickTimer = null;
-    let resyncTimer = null;
-
-    function formatClock(ms){
-      // Use user's locale formatting but force the display timezone
-      const d = new Date(ms);
-      return d.toLocaleTimeString(undefined, {
-        timeZone: TZ,
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit"
-      });
+    
+    function pad2(n){ return String(n).padStart(2, "0"); }
+    
+    function wallSecondsToHMS(s){
+      s = ((s % 86400) + 86400) % 86400;
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      return `${pad2(h)}:${pad2(m)}:${pad2(sec)}`;
     }
-
-    function startTick(){
-      if (tickTimer) clearInterval(tickTimer);
-      tickTimer = setInterval(() => {
-        if (baseServerMs != null && basePerfMs != null) {
-          const elapsed = performance.now() - basePerfMs;
-          clockTimeEl.textContent = formatClock(baseServerMs + elapsed);
-        }
-      }, 250); // smooth-ish updates
+  
+    function parseHHMMSS(datetimeStr){
+      // "2026-02-24T07:12:34.123456-05:00"
+      const hh = Number(datetimeStr.slice(11, 13));
+      const mm = Number(datetimeStr.slice(14, 16));
+      const ss = Number(datetimeStr.slice(17, 19));
+      return hh * 3600 + mm * 60 + ss;
     }
-
+  
     async function syncTime(){
       try {
         const res = await fetch(`https://worldtimeapi.org/api/timezone/${TZ}`, { cache: "no-store" });
         if (!res.ok) throw new Error("Time API failed");
         const data = await res.json();
-
-        // WorldTimeAPI returns ISO datetime + abbreviation; Date parses ISO
-        const serverMs = new Date(data.datetime).getTime();
-
-        baseServerMs = serverMs;
+      
+        // Authoritative NY wall-clock baseline from API
+        baseWallSeconds = parseHHMMSS(data.datetime);
         basePerfMs = performance.now();
-
+      
+        // Year from API too (so bad local clock can't affect it)
+        yearEl.textContent = data.datetime.slice(0, 4);
+      
         clockMetaEl.textContent = `${TZ}${data.abbreviation ? " • " + data.abbreviation : ""}`;
-        clockTimeEl.textContent = formatClock(serverMs);
-
-        startTick();
-      } catch (e) {
-        // Fallback: local device clock (still shows TZ label so users know intent)
-        baseServerMs = Date.now();
-        basePerfMs = performance.now();
-        clockMetaEl.textContent = `${TZ}`;
-        clockTimeEl.textContent = formatClock(baseServerMs);
-        startTick();
+        clockTimeEl.textContent = wallSecondsToHMS(baseWallSeconds);
+      
+        if (tickTimer) clearInterval(tickTimer);
+        tickTimer = setInterval(() => {
+          const elapsedSeconds = Math.floor((performance.now() - basePerfMs) / 1000);
+          clockTimeEl.textContent = wallSecondsToHMS(baseWallSeconds + elapsedSeconds);
+        }, 250);
+      
+      } catch {
+        if (tickTimer) clearInterval(tickTimer);
+        clockMetaEl.textContent = `${TZ} • time unavailable`;
+        clockTimeEl.textContent = "--:--:--";
+        yearEl.textContent = ""; // optional: blank instead of possibly-wrong local year
       }
     }
-
-    // Initial sync + periodic resync (keeps accuracy without hammering the API)
+  
     syncTime();
-    resyncTimer = setInterval(syncTime, 5 * 60 * 1000);
+    setInterval(syncTime, 5 * 60 * 1000);
   </script>
 </body>
 </html>
