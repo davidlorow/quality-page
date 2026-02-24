@@ -210,60 +210,115 @@
     const clockMetaEl = document.getElementById("clockMeta");
     const yearEl = document.getElementById("year");
     
-    let baseWallSeconds = 0; // seconds since NY midnight at sync moment
-    let basePerfMs = 0;      // performance.now() at sync moment
+    // Fallback APIs in order of preference
+    const timeAPIs = [
+      {
+        url: `http://worldtimeapi.org/api/timezone/${TZ}`,
+        parser: (data) => ({
+          timestamp: new Date(data.datetime).getTime(),
+          year: data.datetime.slice(0, 4),
+          abbreviation: data.abbreviation
+        })
+      },
+      {
+        url: 'https://api.ipgeolocation.io/timezone?apiKey=free&tz=America/New_York',
+        parser: (data) => ({
+          timestamp: new Date(data.date_time).getTime(),
+          year: data.date_time.slice(0, 4),
+          abbreviation: data.timezone_abbreviation
+        })
+      },
+      {
+        url: 'https://timeapi.io/api/TimeZone/zone?timeZone=America/New_York',
+        parser: (data) => ({
+          timestamp: new Date(data.currentLocalTime).getTime(),
+          year: data.currentLocalTime.slice(0, 4),
+          abbreviation: data.abbreviation
+        })
+      }
+    ];
+    
+    let baseTimestamp = 0; // authoritative NY timestamp at sync moment
+    let basePerfMs = 0;    // performance.now() at sync moment
     let tickTimer = null;
     
     function pad2(n){ return String(n).padStart(2, "0"); }
     
-    function wallSecondsToHMS(s){
-      s = ((s % 86400) + 86400) % 86400;
-      const h = Math.floor(s / 3600);
-      const m = Math.floor((s % 3600) / 60);
-      const sec = s % 60;
-      return `${pad2(h)}:${pad2(m)}:${pad2(sec)}`;
+    function formatNYTime(timestamp) {
+      const date = new Date(timestamp);
+      // Force conversion to NY timezone
+      const nyTime = new Date(date.toLocaleString("en-US", {timeZone: "America/New_York"}));
+      return `${pad2(nyTime.getHours())}:${pad2(nyTime.getMinutes())}:${pad2(nyTime.getSeconds())}`;
     }
-  
-    function parseHHMMSS(datetimeStr){
-      // "2026-02-24T07:12:34.123456-05:00"
-      const hh = Number(datetimeStr.slice(11, 13));
-      const mm = Number(datetimeStr.slice(14, 16));
-      const ss = Number(datetimeStr.slice(17, 19));
-      return hh * 3600 + mm * 60 + ss;
-    }
-  
-    async function syncTime(){
+    
+    async function tryTimeAPI(api) {
       try {
-        const res = await fetch(`https://worldtimeapi.org/api/timezone/${TZ}`, { cache: "no-store" });
-        if (!res.ok) throw new Error("Time API failed");
+        const res = await fetch(api.url, { 
+          cache: "no-store",
+          headers: {
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache'
+          }
+        });
+        
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-      
-        // Authoritative NY wall-clock baseline from API
-        baseWallSeconds = parseHHMMSS(data.datetime);
-        basePerfMs = performance.now();
-      
-        // Year from API too (so bad local clock can't affect it)
-        yearEl.textContent = data.datetime.slice(0, 4);
-      
-        clockMetaEl.textContent = `${TZ}${data.abbreviation ? " • " + data.abbreviation : ""}`;
-        clockTimeEl.textContent = wallSecondsToHMS(baseWallSeconds);
-      
-        if (tickTimer) clearInterval(tickTimer);
-        tickTimer = setInterval(() => {
-          const elapsedSeconds = Math.floor((performance.now() - basePerfMs) / 1000);
-          clockTimeEl.textContent = wallSecondsToHMS(baseWallSeconds + elapsedSeconds);
-        }, 250);
-      
-      } catch {
-        if (tickTimer) clearInterval(tickTimer);
-        clockMetaEl.textContent = `${TZ} • time unavailable`;
-        clockTimeEl.textContent = "--:--:--";
-        yearEl.textContent = ""; // optional: blank instead of possibly-wrong local year
+        return api.parser(data);
+      } catch (error) {
+        console.warn(`Time API failed: ${api.url}`, error);
+        throw error;
       }
     }
   
+    async function syncTime(){
+      let timeData = null;
+      
+      // Try each API until one works
+      for (const api of timeAPIs) {
+        try {
+          timeData = await tryTimeAPI(api);
+          break;
+        } catch (error) {
+          continue; // Try next API
+        }
+      }
+      
+      if (timeData) {
+        // Successful sync with authoritative time
+        baseTimestamp = timeData.timestamp;
+        basePerfMs = performance.now();
+        
+        yearEl.textContent = timeData.year;
+        clockMetaEl.textContent = `${TZ}${timeData.abbreviation ? " • " + timeData.abbreviation : ""}`;
+        clockTimeEl.textContent = formatNYTime(baseTimestamp);
+        
+        if (tickTimer) clearInterval(tickTimer);
+        tickTimer = setInterval(() => {
+          const elapsedMs = performance.now() - basePerfMs;
+          const currentTimestamp = baseTimestamp + elapsedMs;
+          clockTimeEl.textContent = formatNYTime(currentTimestamp);
+        }, 100);
+        
+      } else {
+        // All APIs failed
+        if (tickTimer) clearInterval(tickTimer);
+        clockMetaEl.textContent = `${TZ} • time unavailable`;
+        clockTimeEl.textContent = "--:--:--";
+        yearEl.textContent = "";
+        console.error("All time APIs failed");
+      }
+    }
+  
+    // Initial sync and periodic refresh
     syncTime();
-    setInterval(syncTime, 5 * 60 * 1000);
+    setInterval(syncTime, 2 * 60 * 1000); // Sync every 2 minutes
+    
+    // Handle page visibility changes to resync when page becomes visible
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        syncTime();
+      }
+    });
   </script>
 </body>
 </html>
