@@ -205,120 +205,91 @@
   </main>
 
     <script>
-    const TZ = "America/New_York";
-    const clockTimeEl = document.getElementById("clockTime");
-    const clockMetaEl = document.getElementById("clockMeta");
-    const yearEl = document.getElementById("year");
-    
-    // Fallback APIs in order of preference
-    const timeAPIs = [
-      {
-        url: `http://worldtimeapi.org/api/timezone/${TZ}`,
-        parser: (data) => ({
-          timestamp: new Date(data.datetime).getTime(),
-          year: data.datetime.slice(0, 4),
-          abbreviation: data.abbreviation
-        })
-      },
-      {
-        url: 'https://api.ipgeolocation.io/timezone?apiKey=free&tz=America/New_York',
-        parser: (data) => ({
-          timestamp: new Date(data.date_time).getTime(),
-          year: data.date_time.slice(0, 4),
-          abbreviation: data.timezone_abbreviation
-        })
-      },
-      {
-        url: 'https://timeapi.io/api/TimeZone/zone?timeZone=America/New_York',
-        parser: (data) => ({
-          timestamp: new Date(data.currentLocalTime).getTime(),
-          year: data.currentLocalTime.slice(0, 4),
-          abbreviation: data.abbreviation
-        })
+      const TZ = "America/New_York";
+      const clockTimeEl = document.getElementById("clockTime");
+      const clockMetaEl = document.getElementById("clockMeta");
+      const yearEl = document.getElementById("year");
+
+      let baseWallSeconds = 0;
+      let basePerfMs = 0;
+      let tickTimer = null;
+
+      function pad2(n){ return String(n).padStart(2, "0"); }
+
+      function wallSecondsToHMS(s){
+        s = ((s % 86400) + 86400) % 86400;
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const sec = s % 60;
+        return `${pad2(h)}:${pad2(m)}:${pad2(sec)}`;
       }
-    ];
     
-    let baseTimestamp = 0; // authoritative NY timestamp at sync moment
-    let basePerfMs = 0;    // performance.now() at sync moment
-    let tickTimer = null;
-    
-    function pad2(n){ return String(n).padStart(2, "0"); }
-    
-    function formatNYTime(timestamp) {
-      const date = new Date(timestamp);
-      // Force conversion to NY timezone
-      const nyTime = new Date(date.toLocaleString("en-US", {timeZone: "America/New_York"}));
-      return `${pad2(nyTime.getHours())}:${pad2(nyTime.getMinutes())}:${pad2(nyTime.getSeconds())}`;
-    }
-    
-    async function tryTimeAPI(api) {
-      try {
-        const res = await fetch(api.url, { 
-          cache: "no-store",
-          headers: {
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache'
-          }
-        });
-        
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        return api.parser(data);
-      } catch (error) {
-        console.warn(`Time API failed: ${api.url}`, error);
-        throw error;
+      function parseHHMMSS(datetimeStr){
+        // "2026-02-24T07:12:34.123456-05:00"
+        const hh = Number(datetimeStr.slice(11, 13));
+        const mm = Number(datetimeStr.slice(14, 16));
+        const ss = Number(datetimeStr.slice(17, 19));
+        return hh * 3600 + mm * 60 + ss;
       }
-    }
-  
-    async function syncTime(){
-      let timeData = null;
-      
-      // Try each API until one works
-      for (const api of timeAPIs) {
+    
+      async function fetchJsonWithTimeout(url, ms = 3500) {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), ms);
         try {
-          timeData = await tryTimeAPI(api);
-          break;
-        } catch (error) {
-          continue; // Try next API
+          const res = await fetch(url, { cache: "no-store", signal: controller.signal });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return await res.json();
+        } finally {
+          clearTimeout(t);
         }
       }
-      
-      if (timeData) {
-        // Successful sync with authoritative time
-        baseTimestamp = timeData.timestamp;
-        basePerfMs = performance.now();
-        
-        yearEl.textContent = timeData.year;
-        clockMetaEl.textContent = `${TZ}${timeData.abbreviation ? " • " + timeData.abbreviation : ""}`;
-        clockTimeEl.textContent = formatNYTime(baseTimestamp);
-        
-        if (tickTimer) clearInterval(tickTimer);
-        tickTimer = setInterval(() => {
-          const elapsedMs = performance.now() - basePerfMs;
-          const currentTimestamp = baseTimestamp + elapsedMs;
-          clockTimeEl.textContent = formatNYTime(currentTimestamp);
-        }, 100);
-        
-      } else {
-        // All APIs failed
-        if (tickTimer) clearInterval(tickTimer);
-        clockMetaEl.textContent = `${TZ} • time unavailable`;
-        clockTimeEl.textContent = "--:--:--";
-        yearEl.textContent = "";
-        console.error("All time APIs failed");
-      }
-    }
-  
-    // Initial sync and periodic refresh
-    syncTime();
-    setInterval(syncTime, 2 * 60 * 1000); // Sync every 2 minutes
     
-    // Handle page visibility changes to resync when page becomes visible
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) {
-        syncTime();
+      async function syncTime(){
+        try {
+          // Correct endpoints:
+          // - timeapi.world uses gateway.timeapi.world/timezone/{tz}  :contentReference[oaicite:2]{index=2}
+          // - time.now uses time.now/developer/api/timezone/{tz}       :contentReference[oaicite:3]{index=3}
+          // - worldtimeapi.org as last resort (can be flaky)           :contentReference[oaicite:4]{index=4}
+          const candidates = [
+            `https://gateway.timeapi.world/timezone/${TZ}`,
+            `https://time.now/developer/api/timezone/${TZ}`,
+            `https://worldtimeapi.org/api/timezone/${TZ}`,
+          ];
+        
+          let data = null;
+          for (const url of candidates) {
+            try {
+              data = await fetchJsonWithTimeout(url, 3500);
+              if (data && data.datetime) break;
+            } catch (_) {}
+          }
+          if (!data || !data.datetime) throw new Error("All time providers failed");
+        
+          baseWallSeconds = parseHHMMSS(data.datetime);
+          basePerfMs = performance.now();
+        
+          yearEl.textContent = data.datetime.slice(0, 4);
+          clockMetaEl.textContent = `${TZ}${data.abbreviation ? " • " + data.abbreviation : ""}`;
+          clockTimeEl.textContent = wallSecondsToHMS(baseWallSeconds);
+        
+          if (tickTimer) clearInterval(tickTimer);
+          tickTimer = setInterval(() => {
+            const elapsedSeconds = Math.floor((performance.now() - basePerfMs) / 1000);
+            clockTimeEl.textContent = wallSecondsToHMS(baseWallSeconds + elapsedSeconds);
+          }, 250);
+        
+        } catch {
+          if (tickTimer) clearInterval(tickTimer);
+          clockMetaEl.textContent = `${TZ} • time unavailable`;
+          clockTimeEl.textContent = "--:--:--";
+          yearEl.textContent = "";
+        }
       }
-    });
-  </script>
-</body>
+    
+      syncTime();
+      setInterval(syncTime, 5 * 60 * 1000);
+      window.addEventListener("focus", syncTime);
+    </script>
+
+  </body>
 </html>
