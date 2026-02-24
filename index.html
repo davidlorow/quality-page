@@ -100,51 +100,35 @@
       max-width: 70ch;
     }
 
-    .actions{
-      display:flex;
-      gap: 10px;
-      flex-wrap:wrap;
-      align-items:center;
-      justify-content:flex-end;
-    }
-
-    .btn{
-      appearance:none;
-      border: 1px solid rgba(255,255,255,.18);
-      background: rgba(255,255,255,.08);
-      color: var(--text);
-      padding: 10px 14px;
-      border-radius: 12px;
-      font-weight: 600;
-      font-size: 14px;
-      cursor:pointer;
-      transition: transform .06s ease, background .18s ease, border-color .18s ease;
-      user-select:none;
-      text-decoration:none;
-      display:inline-flex;
-      align-items:center;
-      gap: 10px;
-    }
-
-    .btn:hover{
-      background: rgba(255,255,255,.12);
-      border-color: rgba(255,255,255,.28);
-    }
-    .btn:active{ transform: translateY(1px); }
-
-    .btn.primary{
-      background: linear-gradient(180deg, rgba(77,163,255,.95), rgba(44,125,255,.95));
-      border-color: rgba(134,197,255,.55);
-      color: #041024;
-    }
-    .btn.primary:hover{
-      background: linear-gradient(180deg, rgba(134,197,255,.98), rgba(77,163,255,.98));
-    }
-
     .content{
       padding: 0 26px 26px;
       display:grid;
       gap: 16px;
+    }
+
+    /* --- Added clock styles (minimal + matches theme) --- */
+    .clock{
+      padding: 14px 16px;
+      border-radius: calc(var(--radius) - 6px);
+      border: 1px solid rgba(255,255,255,.14);
+      background: rgba(255,255,255,.06);
+      display:flex;
+      align-items:baseline;
+      justify-content:space-between;
+      gap: 12px;
+    }
+    .clock-time{
+      font-size: clamp(34px, 5vw, 54px);
+      font-weight: 800;
+      letter-spacing: -0.6px;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .clock-meta{
+      color: rgba(255,255,255,.75);
+      font-size: 13px;
+      white-space: nowrap;
+      align-self:center;
     }
 
     .image-frame{
@@ -183,10 +167,10 @@
       flex-wrap:wrap;
     }
 
-    /* Small screens */
     @media (max-width: 640px){
       header{ flex-direction:column; align-items:stretch; }
-      .actions{ justify-content:flex-start; }
+      .clock{ flex-direction:column; align-items:flex-start; }
+      .clock-meta{ align-self:flex-start; }
     }
   </style>
 </head>
@@ -202,41 +186,93 @@
             <span style="white-space: nowrap;">Please review the image below. If you have questions, contact your manager or IT/HR.</span>
           </p>
         </div>
-        <!--Optional buttons, can be put back in
-        <div class="actions">
-          
-          <a class="btn" href="#" aria-label="Open full policy">Open full policy</a>
-          
-          <button class="btn primary" type="button" onclick="dismiss()">Got it</button>
-        </div>
-        -->
       </header>
 
       <div class="content">
+        <!-- Added clock (above the image) -->
+        <div class="clock" aria-label="Current time">
+          <div id="clockTime" class="clock-time">--:--:--</div>
+          <div id="clockMeta" class="clock-meta">America/New_York</div>
+        </div>
+
         <div class="image-frame">
-          <!-- Replace policy.png with your image file path -->
           <img src="./policy.png" alt="Policy image" />
         </div>
       </div>
 
       <footer>
         <div>© <span id="year"></span> Ocean Optics</div>
-        <div id="stamp"></div>
       </footer>
     </section>
   </main>
 
   <script>
-    // Optional: if you want a "dismiss" that hides the card
     function dismiss() {
       document.querySelector(".card").style.display = "none";
     }
 
-    // Small quality-of-life stamps
-    const now = new Date();
-    document.getElementById("year").textContent = now.getFullYear();
-    document.getElementById("stamp").textContent =
-      "Last updated: " + now.toLocaleString();
+    document.getElementById("year").textContent = new Date().getFullYear();
+
+    // --- Clock using free time API (WorldTimeAPI) ---
+    const TZ = "America/New_York";
+    const clockTimeEl = document.getElementById("clockTime");
+    const clockMetaEl = document.getElementById("clockMeta");
+
+    let baseServerMs = null;      // server time (ms) at fetch moment
+    let basePerfMs = null;        // performance.now() at fetch moment
+    let tickTimer = null;
+    let resyncTimer = null;
+
+    function formatClock(ms){
+      // Use user's locale formatting but force the display timezone
+      const d = new Date(ms);
+      return d.toLocaleTimeString(undefined, {
+        timeZone: TZ,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    }
+
+    function startTick(){
+      if (tickTimer) clearInterval(tickTimer);
+      tickTimer = setInterval(() => {
+        if (baseServerMs != null && basePerfMs != null) {
+          const elapsed = performance.now() - basePerfMs;
+          clockTimeEl.textContent = formatClock(baseServerMs + elapsed);
+        }
+      }, 250); // smooth-ish updates
+    }
+
+    async function syncTime(){
+      try {
+        const res = await fetch(`https://worldtimeapi.org/api/timezone/${TZ}`, { cache: "no-store" });
+        if (!res.ok) throw new Error("Time API failed");
+        const data = await res.json();
+
+        // WorldTimeAPI returns ISO datetime + abbreviation; Date parses ISO
+        const serverMs = new Date(data.datetime).getTime();
+
+        baseServerMs = serverMs;
+        basePerfMs = performance.now();
+
+        clockMetaEl.textContent = `${TZ}${data.abbreviation ? " • " + data.abbreviation : ""}`;
+        clockTimeEl.textContent = formatClock(serverMs);
+
+        startTick();
+      } catch (e) {
+        // Fallback: local device clock (still shows TZ label so users know intent)
+        baseServerMs = Date.now();
+        basePerfMs = performance.now();
+        clockMetaEl.textContent = `${TZ} • local fallback`;
+        clockTimeEl.textContent = formatClock(baseServerMs);
+        startTick();
+      }
+    }
+
+    // Initial sync + periodic resync (keeps accuracy without hammering the API)
+    syncTime();
+    resyncTimer = setInterval(syncTime, 5 * 60 * 1000);
   </script>
 </body>
 </html>
