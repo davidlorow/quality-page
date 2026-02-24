@@ -204,92 +204,99 @@
     </section>
   </main>
 
-    <script>
-      const TZ = "America/New_York";
-      const clockTimeEl = document.getElementById("clockTime");
-      const clockMetaEl = document.getElementById("clockMeta");
-      const yearEl = document.getElementById("year");
+  <script>
+    const TZ = "America/New_York";
+    const clockTimeEl = document.getElementById("clockTime");
+    const clockMetaEl = document.getElementById("clockMeta");
+    const yearEl = document.getElementById("year");
 
-      let baseWallSeconds = 0;
-      let basePerfMs = 0;
-      let tickTimer = null;
+    let baseWallSeconds = 0;
+    let basePerfMs = 0;
+    let tickTimer = null;
 
-      function pad2(n){ return String(n).padStart(2, "0"); }
+    function pad2(n){ return String(n).padStart(2, "0"); }
 
-      function wallSecondsToHMS(s){
-        s = ((s % 86400) + 86400) % 86400;
-        const h = Math.floor(s / 3600);
-        const m = Math.floor((s % 3600) / 60);
-        const sec = s % 60;
-        return `${pad2(h)}:${pad2(m)}:${pad2(sec)}`;
+    function wallSecondsToHMS(s){
+      s = ((s % 86400) + 86400) % 86400;
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      return `${pad2(h)}:${pad2(m)}:${pad2(sec)}`;
+    }
+
+    function parseHHMMSS(datetimeStr){
+      const hh = Number(datetimeStr.slice(11, 13));
+      const mm = Number(datetimeStr.slice(14, 16));
+      const ss = Number(datetimeStr.slice(17, 19));
+      return hh * 3600 + mm * 60 + ss;
+    }
+
+    async function fetchJsonWithTimeout(url, ms = 3500) {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), ms);
+      try {
+        const res = await fetch(url, { cache: "no-store", signal: controller.signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+      } finally {
+        clearTimeout(t);
       }
-    
-      function parseHHMMSS(datetimeStr){
-        // "2026-02-24T07:12:34.123456-05:00"
-        const hh = Number(datetimeStr.slice(11, 13));
-        const mm = Number(datetimeStr.slice(14, 16));
-        const ss = Number(datetimeStr.slice(17, 19));
-        return hh * 3600 + mm * 60 + ss;
-      }
-    
-      async function fetchJsonWithTimeout(url, ms = 3500) {
-        const controller = new AbortController();
-        const t = setTimeout(() => controller.abort(), ms);
-        try {
-          const res = await fetch(url, { cache: "no-store", signal: controller.signal });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return await res.json();
-        } finally {
-          clearTimeout(t);
+    }
+
+    let lastGoodPerfMs = 0;
+    let retryTimer = null;
+
+    async function syncTime(){
+      try {
+        const candidates = [
+          `https://gateway.timeapi.world/timezone/${TZ}`,
+          `https://time.now/developer/api/timezone/${TZ}`,
+          `https://worldtimeapi.org/api/timezone/${TZ}`,
+        ];
+
+        let data = null;
+        for (const url of candidates) {
+          try {
+            data = await fetchJsonWithTimeout(url, 3500);
+            if (data && data.datetime) break;
+          } catch (_) {}
+        }
+        if (!data || !data.datetime) throw new Error("All time providers failed");
+
+        if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+
+        baseWallSeconds = parseHHMMSS(data.datetime);
+        basePerfMs = performance.now();
+        lastGoodPerfMs = basePerfMs;
+
+        yearEl.textContent = data.datetime.slice(0, 4);
+        clockMetaEl.textContent = `${TZ}${data.abbreviation ? " • " + data.abbreviation : ""}`;
+
+        clockTimeEl.textContent = wallSecondsToHMS(baseWallSeconds);
+        if (tickTimer) clearInterval(tickTimer);
+        tickTimer = setInterval(() => {
+          const elapsedSeconds = Math.floor((performance.now() - basePerfMs) / 1000);
+          clockTimeEl.textContent = wallSecondsToHMS(baseWallSeconds + elapsedSeconds);
+        }, 250);
+
+      } catch {
+        const minsStale = lastGoodPerfMs ? Math.floor((performance.now() - lastGoodPerfMs) / 60000) : null;
+        clockMetaEl.textContent =
+          minsStale == null ? `${TZ} • syncing…` : `${TZ} • stale ${minsStale}m`;
+
+        if (!retryTimer) {
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            syncTime();
+          }, 20000);
         }
       }
-    
-      async function syncTime(){
-        try {
-          // Correct endpoints:
-          // - timeapi.world uses gateway.timeapi.world/timezone/{tz}  :contentReference[oaicite:2]{index=2}
-          // - time.now uses time.now/developer/api/timezone/{tz}       :contentReference[oaicite:3]{index=3}
-          // - worldtimeapi.org as last resort (can be flaky)           :contentReference[oaicite:4]{index=4}
-          const candidates = [
-            `https://gateway.timeapi.world/timezone/${TZ}`,
-            `https://time.now/developer/api/timezone/${TZ}`,
-            `https://worldtimeapi.org/api/timezone/${TZ}`,
-          ];
-        
-          let data = null;
-          for (const url of candidates) {
-            try {
-              data = await fetchJsonWithTimeout(url, 3500);
-              if (data && data.datetime) break;
-            } catch (_) {}
-          }
-          if (!data || !data.datetime) throw new Error("All time providers failed");
-        
-          baseWallSeconds = parseHHMMSS(data.datetime);
-          basePerfMs = performance.now();
-        
-          yearEl.textContent = data.datetime.slice(0, 4);
-          clockMetaEl.textContent = `${TZ}${data.abbreviation ? " • " + data.abbreviation : ""}`;
-          clockTimeEl.textContent = wallSecondsToHMS(baseWallSeconds);
-        
-          if (tickTimer) clearInterval(tickTimer);
-          tickTimer = setInterval(() => {
-            const elapsedSeconds = Math.floor((performance.now() - basePerfMs) / 1000);
-            clockTimeEl.textContent = wallSecondsToHMS(baseWallSeconds + elapsedSeconds);
-          }, 250);
-        
-        } catch {
-          if (tickTimer) clearInterval(tickTimer);
-          clockMetaEl.textContent = `${TZ} • time unavailable`;
-          clockTimeEl.textContent = "--:--:--";
-          yearEl.textContent = "";
-        }
-      }
-    
-      syncTime();
-      setInterval(syncTime, 5 * 60 * 1000);
-      window.addEventListener("focus", syncTime);
-    </script>
+    }
 
-  </body>
+    syncTime();
+    setInterval(syncTime, 5 * 60 * 1000);
+    window.addEventListener("focus", syncTime);
+  </script>
+
+</body>
 </html>
